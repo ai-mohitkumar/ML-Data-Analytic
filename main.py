@@ -1,103 +1,208 @@
-import os
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-from preprocessing import load_data, clean_data, feature_engineering, normalize_features
-from optimization import find_best_k
-from clustering import apply_kmeans
-from comparison import compare_algorithms
-from visualization import scatter_clusters, pca_2d, plot_3d_clusters, plot_elbow
-from clustering import cluster_quality
-from pattern_mining import basket_from_transactions, mine_rules
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+def home():
+    return {"message": "Backend running successfully"}
 
 
-DATA_PATH = os.path.join('data', 'example_user_behavior.csv')
+from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
+from io import StringIO
+import pandas as pd
+import numpy as np
+
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    silhouette_score,
+    davies_bouldin_score,
+    calinski_harabasz_score,
+)
+from sklearn.ensemble import IsolationForest
+
+app = FastAPI(title="User Behavior Analytics API")
+
+# Allow React frontend running on localhost:3000
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-def run_pipeline(csv_path=DATA_PATH):
-    df = load_data(csv_path)
-    df = clean_data(df)
-    df = feature_engineering(df)
+@app.get("/")
+def root():
+    return {"message": "User Behavior Analytics API is running"}
 
-    candidates = ['total_spent', 'quantity']
-    features = [c for c in candidates if c in df.columns]
-    if not features:
-        raise ValueError('Required features not found in dataset')
 
-    df_norm = normalize_features(df, features)
-    comp_table, best_algo, dfs, models = compare_algorithms(df_norm, features)
-    
-    print("\n=== CLUSTERING PERFORMANCE EVALUATION ===")
-    print(comp_table.to_string(index=False))
+@app.post("/analyze")
+async def analyze(file: UploadFile = File(...)):
+    # Read uploaded CSV
+    contents = await file.read()
+    df = pd.read_csv(StringIO(contents.decode("utf-8")))
 
-    # Save comparison table for dashboard
-    comp_table.to_csv('comparison_metrics.csv', index=False)
-    print("Exported comparison_metrics.csv")
-    
-    # Optimal k from Silhouette (Elbow method)
-    opt_results = find_best_k(df_norm, features)
-    best_k = opt_results['best_k']
-    wcss_list = opt_results['wcss_list']
-    k_values = list(range(2, len(wcss_list)+2))
-    plot_elbow(k_values, wcss_list)
-    
-    df_clustered, kmeans_model = apply_kmeans(df_norm, features, best_k)
-    
-    # Final metrics for chosen k
-    final_scores = cluster_quality(df_norm, features, df_clustered['cluster'])
-    print("\nFinal Clustering Performance (k={}):".format(best_k))
-    print("Silhouette Score: {:.4f} (higher better)".format(final_scores['silhouette']))
-    print("Davies-Bouldin Index: {:.4f} (lower better)".format(final_scores['davies_bouldin']))
-    print("Calinski-Harabasz Score: {:.2f} (higher better)".format(final_scores['calinski_harabasz']))
-    
-    # Export comparison table
-    comp_table.to_csv('comparison_metrics.csv', index=False)
-    
-    # Export k vs metrics
-    opt_results = opt_results  # already have
-    k_df = pd.DataFrame([{'k':k+2, **score} for k, score in enumerate(opt_results['all_scores'])] ) 
-    k_df.to_csv('k_metrics.csv', index=False)
-    
-    # Export metrics
-    metrics_df = pd.DataFrame([final_scores])
-    metrics_df.to_csv('clustering_metrics.csv', index=False)
-    print("Exported clustering_metrics.csv, comparison_metrics.csv, k_metrics.csv")
-    
-    scatter_clusters(df_clustered, features[0], features[1], 'cluster', 'Optimized Clusters (k={})'.format(best_k))
-    pca_2d(df_clustered, features)
-    plot_3d_clusters(df_clustered, features)
+    if df.empty:
+        return {
+            "message": "CSV is empty",
+            "rows": 0,
+            "columns": [],
+            "preview": [],
+            "clusters": [],
+            "metrics": {},
+            "patterns": [],
+            "recommendations": [],
+            "algorithm": {"selected": "N/A"},
+            "anomalies": {"count": 0, "percentage": 0},
+        }
 
-    if {'InvoiceNo', 'Description', 'quantity'}.issubset(df.columns):
-        basket = basket_from_transactions(df)
-        frequent, rules = mine_rules(basket)
-        print('Top rules:')
-        print(rules.sort_values('lift', ascending=False).head())
+    # Keep only numeric columns for ML analysis
+    numeric_df = df.select_dtypes(include=[np.number])
+
+    if numeric_df.shape[1] == 0:
+        return {
+            "message": "No numeric columns found",
+            "rows": len(df),
+            "columns": list(df.columns),
+            "preview": df.head().to_dict(orient="records"),
+            "clusters": [],
+            "metrics": {},
+            "patterns": [],
+            "recommendations": [],
+            "algorithm": {"selected": "N/A"},
+            "anomalies": {"count": 0, "percentage": 0},
+        }
+
+    # Fill missing values
+    numeric_df = numeric_df.fillna(numeric_df.mean())
+
+    # Scale data
+    scaler = StandardScaler()
+    X = scaler.fit_transform(numeric_df)
+
+    # Choose number of clusters
+    n_samples = len(numeric_df)
+    k = 3 if n_samples >= 3 else 2
+    k = min(k, n_samples)
+
+    if n_samples < 2:
+        labels = np.zeros(n_samples, dtype=int)
+        clusters = [{
+            "id": 0,
+            "label": "Cluster 0",
+            "size": int(n_samples),
+            "percentage": 100.0,
+            "avg_spending": 0.0,
+            "avg_purchases": 0.0,
+        }]
+        metrics = {
+            "silhouette": 0.0,
+            "davies_bouldin": 0.0,
+            "calinski_harabasz": 0.0,
+            "icso_score": 0.0,
+        }
     else:
-        print('Pattern mining not possible: required columns missing')
+        # KMeans clustering
+        model = KMeans(n_clusters=k, random_state=42, n_init=10)
+        labels = model.fit_predict(X)
 
-    print('Cluster analysis:')
-    cluster_means = df_clustered.groupby('cluster')[features].mean()
-    # Case study
-    print("\\nCase Study: E-commerce Insights")
-    high_spend_cluster = cluster_means['total_spent'].idxmax()
-    avg_spent = cluster_means['total_spent'].mean()
-    pct_diff = (cluster_means['total_spent'].max() / avg_spent - 1) if avg_spent != 0 else 0
-    print(f"Cluster {high_spend_cluster} users spent {cluster_means['total_spent'].max():.2f} avg ({pct_diff:.0%} higher than average) - premium segment.")
+        # Build cluster summaries
+        clusters = []
+        spending_col = "spending_score" if "spending_score" in numeric_df.columns else numeric_df.columns[0]
+        purchase_col = (
+            "purchase_frequency"
+            if "purchase_frequency" in numeric_df.columns
+            else numeric_df.columns[min(1, len(numeric_df.columns) - 1)]
+        )
 
-    # Recommendation
-    print("\\nRecommendations:")
-    for c in df_clustered['cluster'].unique():
-        mean_spent = cluster_means.loc[c, 'total_spent']
-        if mean_spent > avg_spent:
-            print(f"Cluster {c}: Recommend premium products")
+        for cluster_id in range(k):
+            cluster_rows = numeric_df[labels == cluster_id]
+            size = len(cluster_rows)
+            percentage = (size / n_samples) * 100 if n_samples else 0
+
+            clusters.append({
+                "id": int(cluster_id),
+                "label": f"Cluster {cluster_id}",
+                "size": int(size),
+                "percentage": float(percentage),
+                "avg_spending": float(cluster_rows[spending_col].mean()) if size else 0.0,
+                "avg_purchases": float(cluster_rows[purchase_col].mean()) if size else 0.0,
+            })
+
+        # Metrics (only valid when at least 2 clusters are present)
+        if len(set(labels)) > 1:
+            silhouette = float(silhouette_score(X, labels))
+            davies_bouldin = float(davies_bouldin_score(X, labels))
+            calinski_harabasz = float(calinski_harabasz_score(X, labels))
         else:
-            print(f"Cluster {c}: Offer discounts")
+            silhouette = 0.0
+            davies_bouldin = 0.0
+            calinski_harabasz = 0.0
 
-    # Export
-    df_clustered.to_csv('clustered_users.csv', index=False)
-    print("Exported clustered_users.csv")
-    print("All results exported including clustering_metrics.csv") 
+        # Simple normalized composite score (ICSO)
+        icso_score = max(
+            0.0,
+            min(
+                1.0,
+                (max(silhouette, 0.0) + (1.0 / (1.0 + max(davies_bouldin, 0.0)))) / 2.0,
+            ),
+        )
 
-    rules.to_excel('patterns.xlsx', index=False) if 'rules' in locals() else print("No rules to export")
+        metrics = {
+            "silhouette": silhouette,
+            "davies_bouldin": davies_bouldin,
+            "calinski_harabasz": calinski_harabasz,
+            "icso_score": icso_score,
+        }
 
-if __name__ == '__main__':
-    run_pipeline()
+    # Anomaly detection
+    if n_samples >= 5:
+        iso = IsolationForest(contamination=0.1, random_state=42)
+        anomaly_flags = iso.fit_predict(X)
+        anomaly_count = int((anomaly_flags == -1).sum())
+    else:
+        anomaly_count = 0
 
+    anomaly_percentage = (anomaly_count / n_samples) * 100 if n_samples else 0
+
+    # Example recommendations
+    recommendations = [
+        {"product": "Premium Membership", "confidence": 0.92},
+        {"product": "Discount Coupons", "confidence": 0.87},
+        {"product": "Loyalty Rewards", "confidence": 0.81},
+    ]
+
+    # Example pattern mining placeholders
+    patterns = [
+        {"pattern": "High income users show higher spending scores"},
+        {"pattern": "Frequent purchasers cluster together"},
+    ]
+
+    return {
+        "message": "Analysis complete",
+        "rows": int(len(df)),
+        "columns": list(df.columns),
+        "preview": df.head().to_dict(orient="records"),
+        "clusters": clusters,
+        "metrics": metrics,
+        "patterns": patterns,
+        "recommendations": recommendations,
+        "algorithm": {"selected": "KMeans"},
+        "anomalies": {
+            "count": anomaly_count,
+            "percentage": float(anomaly_percentage),
+        },
+    }

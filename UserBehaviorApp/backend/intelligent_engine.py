@@ -38,19 +38,33 @@ class IntelligentAdaptiveClusteringEngine:
         self.best_model = None
         self.best_algorithm = None
         
-    def calculate_icso_metric(self, labels, X):
+    def calculate_icso_metric(self, labels, X, *, prev_labels=None, anomaly_ratio: float = 0.0, feature_weight: float = 1.0):
         """
-        🔬 Novel ICSO Metric: Inter-Cluster Separation Optimization Score
-        
-        Formula:
-        ICSO = (mean_inter_cluster_distance / mean_intra_cluster_variance)
-        
-        Higher = Better (well-separated clusters with low variance within)
+        🔬 Novel AICSO Metric (Advanced ICSO)
+
+        Upgraded from ICSO to include:
+        - Temporal Stability (consistency with previous clustering)
+        - Noise Penalty (anomaly ratio)
+        - Feature Weighting (optional scaling)
+
+        Formula (research/patent style):
+
+            AICSO = (D_inter * S_temporal * W_feature) / (V_intra + A_noise)
+
+        Where:
+        - D_inter: mean inter-cluster centroid distance
+        - V_intra: mean intra-cluster variance of point distances to centroid
+        - S_temporal: cluster assignment stability w.r.t. prev_labels (Jaccard-like on pairs)
+        - A_noise: anomaly_ratio (e.g., proportion of anomalies)
+        - W_feature: feature_weight (default 1.0)
+
+        Higher = Better.
         """
         try:
+            labels = np.asarray(labels)
             unique_labels = np.unique(labels)
-            
-            # Calculate intra-cluster variance
+
+            # --- V_intra ---
             intra_variance = []
             for label in unique_labels:
                 cluster_points = X[labels == label]
@@ -58,26 +72,65 @@ class IntelligentAdaptiveClusteringEngine:
                     centroid = cluster_points.mean(axis=0)
                     distances = np.linalg.norm(cluster_points - centroid, axis=1)
                     intra_variance.append(np.var(distances))
-            
-            mean_intra_variance = np.mean(intra_variance) if intra_variance else 1.0
-            
-            # Calculate inter-cluster distance
+
+            mean_intra_variance = float(np.mean(intra_variance)) if intra_variance else 1.0
+
+            # --- D_inter ---
             centroids = []
             for label in unique_labels:
-                centroids.append(X[labels == label].mean(axis=0))
+                pts = X[labels == label]
+                if len(pts) == 0:
+                    continue
+                centroids.append(pts.mean(axis=0))
             centroids = np.array(centroids)
-            
+
             if len(centroids) > 1:
                 inter_dists = pairwise_distances(centroids).flatten()
-                inter_dists = inter_dists[inter_dists > 0]  # Remove self-distances
-                mean_inter_distance = np.mean(inter_dists) if len(inter_dists) > 0 else 1.0
+                inter_dists = inter_dists[inter_dists > 0]
+                mean_inter_distance = float(np.mean(inter_dists)) if len(inter_dists) > 0 else 1.0
             else:
                 mean_inter_distance = 0.0
-            
-            icso = mean_inter_distance / (mean_intra_variance + 1e-6)
-            return float(icso)
+
+            # --- S_temporal ---
+            if prev_labels is None:
+                temporal_stability = 1.0
+            else:
+                prev_labels = np.asarray(prev_labels)
+                if prev_labels.shape[0] != labels.shape[0]:
+                    temporal_stability = 1.0
+                else:
+                    # Pairwise agreement stability: fraction of sample pairs with same assignment
+                    # This is O(n^2); approximate using label-wise matching on aligned positions instead.
+                    # Using a robust simple alternative: accuracy-like agreement after relabeling.
+                    from sklearn.preprocessing import LabelEncoder
+                    from sklearn.metrics import accuracy_score
+
+                    le1 = LabelEncoder()
+                    le2 = LabelEncoder()
+                    a = le1.fit_transform(labels)
+                    b = le2.fit_transform(prev_labels)
+                    temporal_stability = float(accuracy_score(a, b))
+                    # Bound to [0,1]
+                    temporal_stability = max(0.0, min(1.0, temporal_stability))
+
+            # --- A_noise ---
+            noise_penalty = float(anomaly_ratio) if anomaly_ratio is not None else 0.0
+            noise_penalty = max(0.0, noise_penalty)
+
+            # --- W_feature ---
+            w_feature = float(feature_weight) if feature_weight is not None else 1.0
+            if w_feature <= 0:
+                w_feature = 1.0
+
+            # --- AICSO ---
+            numerator = mean_inter_distance * temporal_stability * w_feature
+            denominator = (mean_intra_variance + noise_penalty + 1e-6)
+            aicso = numerator / denominator
+
+            return float(aicso)
         except:
             return 0.0
+
     
     def calculate_hybrid_score(self, labels):
         """

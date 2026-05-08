@@ -1,20 +1,48 @@
 import React, { useState } from 'react';
 import {
-  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  BarChart, Bar, LineChart, Line, Cell, PieChart, Pie, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer
 } from 'recharts';
-import { generateClusterData } from './generateClusterData.js';
 import './DashboardStyles.css';
 
 const Dashboard = () => {
+  const [uploadedFile, setUploadedFile] = useState(null);
   const [mode, setMode] = useState('input'); // 'input' or 'analysis'
-  const [fields, setFields] = useState(['value1', 'value2']);
+  // const [fields, setFields] = useState(['value1', 'value2']);
+  const [fields, setFields] = useState([]);
   const [newFieldName, setNewFieldName] = useState('');
-  const [records, setRecords] = useState([{ value1: '', value2: '' }]);
+  // const [records, setRecords] = useState([{ value1: '', value2: '' }]);
+  const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState(null);
+  const [results, setResults] = useState({
+    message: '',
+    rows: 0,
+    columns: [],
+    preview: [],
+    clusters: [],
+    metrics: {},
+    patterns: [],
+    recommendations: []
+  });
   const [selectedCluster, setSelectedCluster] = useState(0);
-  const [clusterData, setClusterData] = useState([]);
+
+  const clusterData = (results?.clusters || []).flatMap((cluster) => {
+    const count = cluster.size || 1;
+    const spending = cluster.avg_spending || 0;
+    const purchases = cluster.avg_purchases || 0;
+
+    return Array.from({ length: count }, () => ({
+      x: spending + (Math.random() - 0.5) * Math.max(spending * 0.1, 1),
+      y: purchases + (Math.random() - 0.5) * Math.max(purchases * 0.1, 1),
+      cluster: cluster.id
+    }));
+  });
 
   const addField = () => {
     if (newFieldName.trim()) {
@@ -45,39 +73,111 @@ const Dashboard = () => {
 
   const updateRecordField = (recordIndex, fieldName, value) => {
     const newRecords = [...records];
-    newRecords[recordIndex][fieldName] = value;
+
+    newRecords[recordIndex][fieldName] = parseFloat(value) || 0;
     setRecords(newRecords);
+  };
+  const handleFileUpload = (event) => {
+    const file = event.target.files[0];
+
+    if (!file) return;
+
+    if (!file.name.endsWith('.csv')) {
+      alert('Please upload a CSV file');
+      return;
+    }
+
+    setUploadedFile(file);
+
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      const text = e.target.result;
+
+      const rows = text.trim().split('\n');
+
+      const headers = rows[0].split(',').map((h) => h.trim());
+
+      const parsedRecords = rows.slice(1).map((row) => {
+        const values = row.split(',');
+
+        const obj = {};
+
+        headers.forEach((header, index) => {
+          obj[header] = parseFloat(values[index]) || 0;
+        });
+
+        return obj;
+      });
+
+      setFields(headers);
+      setRecords(parsedRecords);
+    };
+
+    reader.readAsText(file);
   };
 
   const handleAnalyze = async () => {
-    if (records.length < 2) {
+    const validRecords = records.filter((record) =>
+      Object.values(record).some(
+        (value) =>
+          value !== '' &&
+          value !== null &&
+          value !== undefined
+      )
+    );
+
+    // Require at least 2 records and 1 field only when no CSV file is uploaded
+    if (!uploadedFile && (fields.length < 1 || validRecords.length < 2)) {
       alert('Please add at least 2 records to analyze');
       return;
     }
 
     setLoading(true);
+
     try {
-      // Convert records to CSV format
-      const csvContent = [
-        fields.join(','),
-        ...records.map(r => fields.map(f => r[f]).join(','))
-      ].join('\n');
-
-      // Create CSV file
-      const blob = new Blob([csvContent], { type: 'text/csv' });
-      const file = new File([blob], 'data.csv', { type: 'text/csv' });
-
       const formData = new FormData();
-      formData.append('file', file);
 
-      const response = await fetch('http://127.0.0.1:8003/analyze-intelligent', {
-        method: 'POST',
-        body: formData,
-      });
+      if (uploadedFile) {
+        // Use the uploaded CSV file directly
+        formData.append('file', uploadedFile);
+      } else {
+        // Create CSV from manually entered table data
+        const csvContent = [
+          fields.join(','),
+          ...records.map((record) =>
+            fields.map((field) => record[field]).join(',')
+          )
+        ].join('\n');
+
+        const blob = new Blob([csvContent], {
+          type: 'text/csv'
+        });
+
+        const generatedFile = new File(
+          [blob],
+          'data.csv',
+          {
+            type: 'text/csv'
+          }
+        );
+
+        formData.append('file', generatedFile);
+      }
+
+      const response = await fetch(
+        'http://127.0.0.1:8000/analyze',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       const data = await response.json();
+      alert(JSON.stringify(data, null, 2));
+      console.log(data);
+
       setResults(data);
-      generateClusterData(data);
       setMode('analysis');
     } catch (error) {
       console.error('Analysis failed:', error);
@@ -86,6 +186,8 @@ const Dashboard = () => {
       setLoading(false);
     }
   };
+
+
 
   const colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#6366f1', '#f43f5e'];
 
@@ -109,16 +211,17 @@ const Dashboard = () => {
 
           <div className="upload-card">
             <div className="upload-content">
-              
+
               {/* Field Management */}
               <div className="field-manager">
                 <h3 className="section-title">📋 Add Fields</h3>
                 <div className="field-input-group">
                   <input
+                    id="newFieldName"
+                    name="newFieldName"
                     type="text"
                     value={newFieldName}
                     onChange={(e) => setNewFieldName(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && addField()}
                     placeholder="Field name (e.g., age, score, value)"
                     className="field-input"
                   />
@@ -141,7 +244,25 @@ const Dashboard = () => {
                   ))}
                 </div>
               </div>
+              {/* CSV Upload */}
+              <div className="csv-upload-section">
+                <h3 className="section-title">📁 Upload CSV File</h3>
 
+                <input
+                  id="csvUpload"
+                  name="csvUpload"
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileUpload}
+                  className="file-input"
+                />
+
+                {uploadedFile && (
+                  <p className="upload-success">
+                    ✅ Uploaded: {uploadedFile.name}
+                  </p>
+                )}
+              </div>
               {/* Data Entry Table */}
               {fields.length > 0 && (
                 <div className="data-entry-section">
@@ -164,7 +285,9 @@ const Dashboard = () => {
                             {fields.map((field, fieldIdx) => (
                               <td key={fieldIdx}>
                                 <input
-                                  type="text"
+                                  id={`record-${recordIdx}-${field}`}
+                                  name={`record-${recordIdx}-${field}`}
+                                  type="number"
                                   value={record[field] || ''}
                                   onChange={(e) =>
                                     updateRecordField(recordIdx, field, e.target.value)
@@ -201,12 +324,41 @@ const Dashboard = () => {
                 </button>
                 <button
                   onClick={handleAnalyze}
-                  disabled={loading || records.length < 2 || fields.length === 0}
-                  className={`analyze-button ${
-                    loading || records.length < 2 || fields.length === 0
-                      ? 'disabled'
-                      : 'enabled'
-                  }`}
+                  disabled={
+                    loading ||
+                    (
+                      !uploadedFile &&
+                      (
+                        records.filter(record =>
+                          Object.values(record).some(
+                            value =>
+                              value !== "" &&
+                              value !== null &&
+                              value !== undefined
+                          )
+                        ).length < 2 ||
+                        fields.length === 0
+                      )
+                    )
+                  }
+                  className={`analyze-button ${loading ||
+                    (
+                      !uploadedFile &&
+                      (
+                        records.filter(record =>
+                          Object.values(record).some(
+                            value =>
+                              value !== "" &&
+                              value !== null &&
+                              value !== undefined
+                          )
+                        ).length < 2 ||
+                        fields.length === 0
+                      )
+                    )
+                    ? 'disabled'
+                    : 'enabled'
+                    }`}
                 >
                   <span className="button-icon">⚡</span>
                   {loading ? 'Analyzing...' : 'Run ML Analysis'}
@@ -222,11 +374,32 @@ const Dashboard = () => {
       </div>
     );
   }
+  const clusters = results?.clusters || [];
 
-  const totalUsers = results.clusters.reduce((sum, c) => sum + c.size, 0);
-  const avgSpending = (results.clusters.reduce((sum, c) => sum + c.avg_spending, 0) / results.clusters.length).toFixed(2);
-  const avgOrders = (results.clusters.reduce((sum, c) => sum + c.avg_purchases, 0) / results.clusters.length).toFixed(1);
+  const totalUsers = clusters.reduce(
+    (sum, c) => sum + (c.size || 0),
+    0
+  );
 
+  const avgSpending =
+    clusters.length > 0
+      ? (
+        clusters.reduce(
+          (sum, c) => sum + (c.avg_spending || 0),
+          0
+        ) / clusters.length
+      ).toFixed(2)
+      : "0.00";
+
+  const avgOrders =
+    clusters.length > 0
+      ? (
+        clusters.reduce(
+          (sum, c) => sum + (c.avg_purchases || 0),
+          0
+        ) / clusters.length
+      ).toFixed(1)
+      : "0.0";
   return (
     <div className="dashboard-main">
       <div className="dashboard-background">
@@ -241,7 +414,22 @@ const Dashboard = () => {
             <span className="dashboard-title-icon">⚡</span>
             <h1>User Behavior Analytics Dashboard</h1>
           </div>
-          <button className="new-analysis-button" onClick={() => setResults(null)}>
+          <button
+            className="new-analysis-button"
+            onClick={() => {
+              setMode('input');
+              setResults({
+                message: '',
+                rows: 0,
+                columns: [],
+                preview: [],
+                clusters: [],
+                metrics: {},
+                patterns: [],
+                recommendations: []
+              });
+            }}
+          >
             New Analysis
           </button>
         </div>
@@ -252,7 +440,12 @@ const Dashboard = () => {
             { label: 'TOTAL USERS', value: totalUsers, icon: '👥', color: 'metric-blue' },
             { label: 'AVG SPENDING', value: '$' + avgSpending, icon: '$', color: 'metric-green' },
             { label: 'AVG ORDERS', value: avgOrders, icon: '🛒', color: 'metric-orange' },
-            { label: 'ICSO SCORE', value: results.metrics.icso_score.toFixed(2), icon: '📈', color: 'metric-purple' },
+            {
+              label: 'ICSO SCORE',
+              value: (results?.metrics?.icso_score ?? 0).toFixed(2),
+              icon: '📈',
+              color: 'metric-purple'
+            },
           ].map((metric, idx) => (
             <div key={idx} className={`metric-card ${metric.color}`}>
               <div className="metric-header">
@@ -293,11 +486,13 @@ const Dashboard = () => {
                   }}
                 />
                 <Legend />
-                {results.clusters.map((cluster, idx) => (
+                {(results?.clusters || []).map((cluster, idx) => (
                   <Scatter
                     key={idx}
-                    name={`${cluster.label} (${cluster.size} users)`}
-                    data={clusterData.filter((d) => d.cluster === cluster.id)}
+                    name={`${cluster.label || `Cluster ${idx + 1}`} (${cluster.size || 0} users)`}
+                    data={(clusterData || []).filter(
+                      (d) => d.cluster === cluster.id
+                    )}
                     fill={colors[idx % colors.length]}
                     fillOpacity={0.7}
                   />
@@ -320,7 +515,7 @@ const Dashboard = () => {
                     onChange={(e) => setSelectedCluster(Number(e.target.value))}
                     className="cluster-select"
                   >
-                    {results.clusters.map((cluster) => (
+                    {clusters.map((cluster) => (
                       <option key={cluster.id} value={cluster.id}>
                         Cluster {cluster.id} - {cluster.label}
                       </option>
@@ -333,11 +528,11 @@ const Dashboard = () => {
                   <div className="info-details">
                     <div className="info-row">
                       <span>Size</span>
-                      <strong>{results.clusters[selectedCluster]?.size} users</strong>
+                      <strong>{clusters[selectedCluster]?.size ?? 0} users</strong>
                     </div>
                     <div className="info-row">
                       <span>% of Total</span>
-                      <strong>{results.clusters[selectedCluster]?.percentage.toFixed(1)}%</strong>
+                      <strong>{(clusters[selectedCluster]?.percentage ?? 0).toFixed(1)}%</strong>
                     </div>
                   </div>
                 </div>
@@ -356,16 +551,18 @@ const Dashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {results.recommendations[selectedCluster]?.recommendations.slice(0, 4).map((rec, idx) => (
-                      <tr key={idx}>
-                        <td>
-                          <span className="rec-product">{rec}</span>
-                        </td>
-                        <td>
-                          <span className="confidence-badge">{92 - idx * 5}%</span>
-                        </td>
-                      </tr>
-                    ))}
+                    {(results?.recommendations?.[selectedCluster]?.recommendations || [])
+                      .slice(0, 4)
+                      .map((rec, idx) => (
+                        <tr key={idx}>
+                          <td>
+                            <span className="rec-product">{rec}</span>
+                          </td>
+                          <td>
+                            <span className="confidence-badge">{92 - idx * 5}%</span>
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
@@ -379,7 +576,7 @@ const Dashboard = () => {
           <div className="detail-card">
             <h3>🤖 Algorithm Selection</h3>
             <div className="algo-scores">
-              {Object.entries(results.algorithm.scores).map(([algo, score]) => (
+              {Object.entries(results?.algorithm?.scores || {}).map(([algo, score]) => (
                 <div key={algo} className="algo-item">
                   <div className="algo-row">
                     <span className="algo-name">{algo}</span>
@@ -387,9 +584,8 @@ const Dashboard = () => {
                   </div>
                   <div className="algo-bar">
                     <div
-                      className={`algo-progress ${
-                        algo === results.algorithm.selected ? 'active' : 'inactive'
-                      }`}
+                      className={`algo-progress ${algo === results?.algorithm?.selected ? 'active' : 'inactive'
+                        }`}
                       style={{ width: `${score * 100}%` }}
                     ></div>
                   </div>
@@ -397,7 +593,7 @@ const Dashboard = () => {
               ))}
             </div>
             <div className="algo-selected">
-              ✅ Selected: <strong>{results.algorithm.selected.toUpperCase()}</strong>
+              ✅ Selected: <strong>{(results?.algorithm?.selected || 'N/A').toUpperCase()}</strong>
             </div>
           </div>
 
@@ -407,19 +603,30 @@ const Dashboard = () => {
             <div className="metrics-list">
               <div className="metric-item">
                 <span>Silhouette</span>
-                <strong>{results.metrics.silhouette.toFixed(4)}</strong>
+                <strong>
+                  {(results?.metrics?.silhouette ?? 0).toFixed(4)}
+                </strong>
               </div>
+
               <div className="metric-item">
                 <span>Davies-Bouldin</span>
-                <strong>{results.metrics.davies_bouldin.toFixed(4)}</strong>
+                <strong>
+                  {(results?.metrics?.davies_bouldin ?? 0).toFixed(4)}
+                </strong>
               </div>
+
               <div className="metric-item">
                 <span>Calinski-Harabasz</span>
-                <strong>{results.metrics.calinski_harabasz.toFixed(2)}</strong>
+                <strong>
+                  {(results?.metrics?.calinski_harabasz ?? 0).toFixed(2)}
+                </strong>
               </div>
+
               <div className="metric-item icso">
                 <span>🔬 ICSO Score</span>
-                <strong>{results.metrics.icso_score.toFixed(4)}</strong>
+                <strong>
+                  {(results?.metrics?.icso_score ?? 0).toFixed(4)}
+                </strong>
               </div>
             </div>
           </div>
@@ -430,16 +637,22 @@ const Dashboard = () => {
             <div className="anomaly-content">
               <div className="anomaly-count">
                 <span className="anomaly-label">Anomalies Found</span>
-                <span className="anomaly-number">{results.anomalies.count}</span>
+                <span className="anomaly-number">
+                  {results?.anomalies?.count ?? 0}
+                </span>
               </div>
+
               <div className="anomaly-bar">
                 <div
                   className="anomaly-progress"
-                  style={{ width: `${results.anomalies.percentage}%` }}
+                  style={{
+                    width: `${results?.anomalies?.percentage ?? 0}%`
+                  }}
                 ></div>
               </div>
+
               <p className="anomaly-text">
-                {results.anomalies.percentage.toFixed(2)}% showing unusual behavior
+                {(results?.anomalies?.percentage ?? 0).toFixed(2)}% showing unusual behavior
               </p>
             </div>
           </div>
@@ -448,22 +661,29 @@ const Dashboard = () => {
           <div className="detail-card">
             <h3>📈 Cluster Distribution</h3>
             <div className="distribution-list">
-              {results.clusters.map((cluster, idx) => (
+              {clusters.map((cluster, idx) => (
                 <div
                   key={idx}
                   className="distribution-item"
-                  onClick={() => setSelectedCluster(cluster.id)}
+                  onClick={() => setSelectedCluster(cluster.id ?? 0)}
                 >
                   <div className="distribution-header">
-                    <span>Cluster {cluster.id}</span>
-                    <span className="distribution-percent">{cluster.percentage.toFixed(1)}%</span>
+                    <span>Cluster {cluster.id ?? idx + 1}</span>
+                    <span className="distribution-percent">
+                      {(cluster.percentage ?? 0).toFixed(1)}%
+                    </span>
                   </div>
+
                   <div className="distribution-bar">
                     <div
                       className="distribution-progress"
                       style={{
-                        background: `linear-gradient(to right, ${colors[idx % colors.length]}, ${colors[(idx + 1) % colors.length]})`,
-                        width: `${cluster.percentage}%`,
+                        background: `linear-gradient(
+                to right,
+                ${colors[idx % colors.length]},
+                ${colors[(idx + 1) % colors.length]}
+              )`,
+                        width: `${cluster.percentage ?? 0}%`,
                       }}
                     ></div>
                   </div>

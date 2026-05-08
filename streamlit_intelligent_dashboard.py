@@ -144,11 +144,47 @@ if run_button or st.session_state.get('results'):
         anomalies_count, anomalies_pct = engine.detect_anomalies()
         metrics = algo_scores[best_algo]
         icso = metrics.pop('icso', 0.0)
+
+        # Optional supervised cluster->segment accuracy (if dataset has user_segment)
+        supervised_accuracy_pct = None
+        if 'user_segment' in df.columns and df['user_segment'].notna().any():
+            try:
+                from sklearn.preprocessing import LabelEncoder
+                le_labels = LabelEncoder()
+                true_y = le_labels.fit_transform(df['user_segment'].fillna('Unknown'))
+                le_clusters = LabelEncoder()
+                enc_clusters = le_clusters.fit_transform(labels)
+
+                from sklearn.metrics import accuracy_score
+                from scipy.optimize import linear_sum_assignment
+                # Map each predicted cluster id to a true label id using the best 1-1 assignment
+                # to maximize accuracy (accounts for arbitrary cluster ids).
+                cm = pd.crosstab(enc_clusters, true_y).to_numpy()
+                row_ind, col_ind = linear_sum_assignment(-cm)
+
+                mapping = {}
+                for pred_cluster_idx, true_label_idx in zip(row_ind, col_ind):
+                    mapping[int(pred_cluster_idx)] = int(true_label_idx)
+
+                mapped_pred = np.array([mapping.get(int(c), 0) for c in enc_clusters], dtype=int)
+                supervised_accuracy = accuracy_score(true_y, mapped_pred)
+                supervised_accuracy_pct = float(supervised_accuracy) * 100.0
+
+            except Exception:
+                supervised_accuracy_pct = None
+
         st.session_state.results = {
-            'df': engine.data, 'best_algo': best_algo, 'algo_scores': algo_scores,
-            'labels': labels, 'metrics': metrics, 'icso': icso,
-            'anomalies_count': anomalies_count, 'anomalies_pct': anomalies_pct
+            'df': engine.data,
+            'best_algo': best_algo,
+            'algo_scores': algo_scores,
+            'labels': labels,
+            'metrics': metrics,
+            'icso': icso,
+            'anomalies_count': anomalies_count,
+            'anomalies_pct': anomalies_pct,
+            'supervised_accuracy_pct': supervised_accuracy_pct,
         }
+
 
     # Success animation
     st.balloons()
@@ -158,14 +194,31 @@ if run_button or st.session_state.get('results'):
 if st.session_state.get('results'):
     df = st.session_state.results['df']
     results = st.session_state.results
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Overview", "🎨 Clustering", "🔍 Dim Reduction", "👥 Profiles & Anomalies", "🎯 Insights"])
+
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 Overview",
+        "🎨 Clustering",
+        "🔍 Dim Reduction",
+        "👥 Profiles & Anomalies",
+        "🧠 Real-time Prediction",
+        "🎯 Insights",
+    ])
+
 
     with tab1:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Hybrid Score", f"{results['metrics']['hybrid_score']:.3f}", delta="⭐ Best")
         col2.metric("Silhouette", f"{results['metrics']['silhouette']:.3f}")
         col3.metric("ICSO Score", f"{results['icso']:.2f}")
-        col4.metric("Anomalies", f"{results['anomalies_count']} ({results['anomalies_pct']:.1f}%)")
+        col4.metric(
+            "Anomalies",
+            f"{results['anomalies_count']} ({results['anomalies_pct']:.1f}%)"
+        )
+
+        # Optional supervised cluster->segment accuracy
+        if results.get('supervised_accuracy_pct') is not None:
+            st.info(f"Cluster/segment accuracy: {results['supervised_accuracy_pct']:.1f}% (requires `user_segment` column)")
+
 
         # Algo comparison animated bar
         score_df = pd.DataFrame([
@@ -178,6 +231,7 @@ if st.session_state.get('results'):
 
     with tab2:
         st.subheader("🎯 Clustering Analysis")
+
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Elbow Method + Silhouette vs K")
@@ -222,15 +276,30 @@ if st.session_state.get('results'):
                 from sklearn.preprocessing import LabelEncoder
                 le = LabelEncoder()
                 y = le.fit_transform(df['user_segment'].fillna('Unknown'))
-                lda = LinearDiscriminantAnalysis(n_components=min(3, len(np.unique(y))))
-                X_lda = lda.fit_transform(StandardScaler().fit_transform(df[numeric_features].fillna(0)), y)
-                fig_lda = px.scatter_3d(pd.DataFrame({
-                    'LD1': X_lda[:,0] if X_lda.shape[1] > 0 else np.zeros(len(df)),
-                    'LD2': X_lda[:,1] if X_lda.shape[1] > 1 else np.zeros(len(df)),
-                    'LD3': X_lda[:,2] if X_lda.shape[1] > 2 else np.zeros(len(df)),
-                    'segment': le.inverse_transform(y)
-                }), x='LD1', y='LD2', z='LD3', color='segment', title="LDA 3D Components")
-                st.plotly_chart(fig_lda, use_container_width=True)
+                # LDA constraints (sklearn): n_components <= min(n_features, n_classes - 1)
+                X_num = StandardScaler().fit_transform(df[numeric_features].fillna(0))
+                n_features = X_num.shape[1]
+                n_classes = len(np.unique(y))
+
+                if n_classes < 2 or n_features < 1:
+                    st.info("Not enough classes/features available for LDA.")
+                else:
+                    max_components_by_classes = n_classes - 1
+                    max_components_by_features = n_features
+                    requested = 3
+                    n_components = min(requested, max_components_by_classes, max_components_by_features)
+
+                    lda = LinearDiscriminantAnalysis(n_components=n_components)
+                    X_lda = lda.fit_transform(X_num, y)
+
+                    fig_lda = px.scatter_3d(pd.DataFrame({
+                        'LD1': X_lda[:, 0] if X_lda.shape[1] > 0 else np.zeros(len(df)),
+                        'LD2': X_lda[:, 1] if X_lda.shape[1] > 1 else np.zeros(len(df)),
+                        'LD3': X_lda[:, 2] if X_lda.shape[1] > 2 else np.zeros(len(df)),
+                        'segment': le.inverse_transform(y)
+                    }), x='LD1', y='LD2', z='LD3', color='segment', title="LDA 3D Components")
+                    st.plotly_chart(fig_lda, use_container_width=True)
+
             else:
                 st.info("No 'user_segment' column for LDA.")
 
@@ -247,10 +316,60 @@ if st.session_state.get('results'):
         st.plotly_chart(fig_anom)
 
     with tab5:
+        # Real-time Prediction (cluster assignment for a new row)
+        st.subheader("🧠 Real-time Prediction")
+
+        st.caption("Upload the same CSV used to train (clusters are created), then predict the cluster for a single new user row.")
+
+        if 'cluster' in df.columns:
+            # Build a simple centroid-based predictor (fast + real-time)
+            feature_cols = numeric_features
+            cluster_centroids = df.groupby('cluster')[feature_cols].mean()
+
+            st.markdown("---")
+            st.write("### Input a new user")
+            user_input = {}
+            cols = st.columns(2)
+            for i, feat in enumerate(feature_cols):
+                with cols[i % 2]:
+                    user_input[feat] = st.number_input(feat, value=float(df[feat].median()) if feat in df else 0.0)
+
+            if st.button("Predict Cluster", type="primary"):
+                x_new = np.array([user_input[f] for f in feature_cols], dtype=float)
+                # distance to each centroid
+                centroids_np = cluster_centroids.to_numpy()
+                dists = np.linalg.norm(centroids_np - x_new, axis=1)
+                pred_cluster = int(cluster_centroids.index[np.argmin(dists)])
+
+                st.success(f"Predicted cluster: {pred_cluster}")
+
+                # Show anomaly flag estimate
+                if 'anomaly' in df.columns:
+                    # compare to closest centroid cluster's anomaly rate
+                    cluster_anom_rate = float(df[df['cluster'] == pred_cluster]['anomaly'].mean()) * 100.0
+                    st.info(f"Estimated anomaly rate for predicted cluster: {cluster_anom_rate:.1f}%")
+
+        # Keep raw export available in tab6
+    with tab6:
         st.subheader("Raw Data & Export")
+
         st.dataframe(df)
         st.download_button("💾 Download Analyzed Data", df.to_csv(index=False), "analyzed_clusters.csv")
 
     st.markdown("---")
+        # Dark AI dashboard styling
+    st.markdown(
+        """
+        <style>
+        body { background-color: #0b1020; }
+        .stApp { background-color: #0b1020; }
+        h1,h2,h3,h4 { color: #e8ecff; }
+        .stMetric { background: linear-gradient(135deg, #1f2a5a 0%, #3a1f5a 100%) !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.caption("🎉 Built with Streamlit + Plotly + Scikit-learn | Novel ICSO Metric | AutoML Clustering")
+
 
