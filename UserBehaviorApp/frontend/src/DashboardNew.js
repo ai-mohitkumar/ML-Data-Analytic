@@ -38,7 +38,7 @@ const Dashboard = () => {
     const purchases = cluster.avg_purchases || 0;
 
     return Array.from({ length: count }, () => ({
-      x: spending + (Math.random() - 0.5) * Math.max(spending * 0.1, 1),
+      x: spending + (MaFth.random() - 0.5) * Math.max(spending * 0.1, 1),
       y: purchases + (Math.random() - 0.5) * Math.max(purchases * 0.1, 1),
       cluster: cluster.id
     }));
@@ -166,7 +166,7 @@ const Dashboard = () => {
       }
 
       const response = await fetch(
-        'http://127.0.0.1:8000/analyze',
+        'https://ml-data-analytic.onrender.com/analyze',
         {
           method: 'POST',
           body: formData,
