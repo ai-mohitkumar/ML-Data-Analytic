@@ -10,11 +10,16 @@ import pandas as pd
 from datetime import timedelta
 from io import StringIO
 import sys
-sys.path.append('..')
+# Ensure local backend modules are importable when running as a package
+sys.path.append(os.path.dirname(__file__))
+
+# Import ML services (they live in this same backend package)
 from ml_service import run_analysis
 from ml_service_intelligent import run_intelligent_analysis
+
 from .auth import (create_access_token, get_password_hash, verify_password, get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES)
 from .database import get_db, engine, SessionLocal, Base
+
 from .models import User, Dataset, Result
 from .schemas import UserCreate, Token, DatasetCreate, ResultOut
 from pydantic import BaseModel
