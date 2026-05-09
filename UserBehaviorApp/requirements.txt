@@ -7,3 +7,4 @@ python-multipart
 bcrypt
 python-dotenv
 pandas
+scikit-learn
